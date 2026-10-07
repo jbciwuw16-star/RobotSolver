@@ -7,6 +7,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import android.util.Log
 import java.util.concurrent.TimeUnit
 
 object AiClient {
@@ -18,7 +19,12 @@ object AiClient {
         val rb = Request.Builder().url(url).post(body.toString().toRequestBody(JSON))
         if (bearer != null) rb.header("Authorization", "Bearer $bearer")
         http.newCall(rb.build()).execute().use { r ->
-            return if (r.isSuccessful) r.body?.string() else null
+            val txt = r.body?.string()
+            if (!r.isSuccessful) {
+                Log.e("Solver", "HTTP ${r.code} dari ${url.substringBefore('?')}: ${txt?.take(300)}")
+                return null
+            }
+            return txt
         }
     }
 
@@ -26,11 +32,11 @@ object AiClient {
         val body = JSONObject().put("contents", JSONArray().put(
             JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
         val res = post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$key",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=$key",
             body, null) ?: return null
         JSONObject(res).getJSONArray("candidates").getJSONObject(0)
             .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
-    }.getOrNull()
+    }.onFailure { Log.e("Solver", "gemini error", it) }.getOrNull()
 
     private fun openAiStyle(url: String, key: String, model: String, prompt: String): String? =
         runCatching {
@@ -40,7 +46,7 @@ object AiClient {
             val res = post(url, body, key) ?: return null
             JSONObject(res).getJSONArray("choices").getJSONObject(0)
                 .getJSONObject("message").getString("content")
-        }.getOrNull()
+        }.onFailure { Log.e("Solver", "openAiStyle error", it) }.getOrNull()
 
     private const val GROQ = "https://api.groq.com/openai/v1/chat/completions"
     private const val OPENROUTER = "https://openrouter.ai/api/v1/chat/completions"
