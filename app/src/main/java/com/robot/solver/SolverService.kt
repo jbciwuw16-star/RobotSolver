@@ -3,6 +3,7 @@ package com.robot.solver
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.graphics.Color
+import android.util.Log
 import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.Rect
@@ -197,6 +198,7 @@ class SolverService : AccessibilityService() {
     }
 
     private fun solve() {
+        Log.d("Solver", "SOLVE diklik, busy=$busy")
         if (busy) return
         val items = collect()
         if (items.isEmpty()) { toast("Soal nggak kebaca"); return }
@@ -218,8 +220,10 @@ class SolverService : AccessibilityService() {
         busy = true
         toast("Mikir...")
         scope.launch {
-            val idx = AiClient.vote(prompt, keys)
-            busy = false
+            val idx = try { AiClient.vote(prompt, keys) } catch (e: Exception) {
+                Log.e("Solver", "vote crash", e); null
+            } finally { busy = false }
+            Log.d("Solver", "hasil idx=$idx dari ${items.size} item")
             if (idx == null || idx !in items.indices) {
                 toast("AI gagal jawab")
                 return@launch
