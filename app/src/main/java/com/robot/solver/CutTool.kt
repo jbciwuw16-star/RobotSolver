@@ -287,7 +287,7 @@ class CutTool(private val svc: AccessibilityService, private val wm: WindowManag
     }
 
     private fun showBrowser(query: String) {
-        val q = "Jawab soal ini dengan benar dan singkat: " + query.take(1500)
+        val q = "Jawab soal ini dengan benar benar mencari nya dimana mana website dan singkat: " + query.take(1500)
         val url = "https://www.google.com/search?udm=50&q=" + URLEncoder.encode(q, "UTF-8")
         val web = WebView(svc).apply {
             settings.javaScriptEnabled = true
