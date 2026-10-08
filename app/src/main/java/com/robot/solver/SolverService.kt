@@ -24,6 +24,7 @@ class SolverService : AccessibilityService() {
     private lateinit var robot: RobotView
     private lateinit var cutBtn: TextView
     private lateinit var pakarBtn: TextView
+    private lateinit var tanyaBtn: TextView
     private lateinit var params: WindowManager.LayoutParams
     private lateinit var toggle: PowerView
     private lateinit var tParams: WindowManager.LayoutParams
@@ -84,6 +85,7 @@ class SolverService : AccessibilityService() {
         val v = if (show) View.VISIBLE else View.GONE
         cutBtn.visibility = v
         pakarBtn.visibility = v
+        tanyaBtn.visibility = v
     }
 
     private fun showOverlay() {
@@ -94,14 +96,18 @@ class SolverService : AccessibilityService() {
         robot = RobotView(this)
         cutBtn = chip("CUT", "#2563EB") {
             menu(false)
-            cut.start(false)
+            cut.start(0)
         }
         pakarBtn = chip("PAKAR", "#7C3AED") {
             menu(false)
-            cut.start(true)
+            cut.start(1)
+        }
+        tanyaBtn = chip("TANYA", "#EA580C") {
+            menu(false)
+            cut.start(2)
         }
         box.addView(robot, LinearLayout.LayoutParams((52 * d).toInt(), (52 * d).toInt()))
-        for (b in listOf(cutBtn, pakarBtn)) {
+        for (b in listOf(cutBtn, pakarBtn, tanyaBtn)) {
             box.addView(b, LinearLayout.LayoutParams(-2, -2).apply { topMargin = (6 * d).toInt() })
         }
 
