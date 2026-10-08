@@ -91,14 +91,16 @@ class CutTool(private val svc: AccessibilityService, private val wm: WindowManag
     private val sw = svc.resources.displayMetrics.widthPixels
     private val sh = svc.resources.displayMetrics.heightPixels
     private var overlay: FrameLayout? = null
-    private var browser: View? = null
-    private var browserParams: WindowManager.LayoutParams? = null
+    private var panel: View? = null
+    private var panelParams: WindowManager.LayoutParams? = null
     private var big = false
+    private var expert = false
 
-    private fun toast(s: String) = Toast.makeText(svc, s, Toast.LENGTH_SHORT).show()
+    private fun toast(s: String) = Toast.makeText(svc, s, Toast.LENGTH_LONG).show()
 
-    fun start() {
+    fun start(expertMode: Boolean) {
         if (overlay != null) return
+        expert = expertMode
         val cutView = CutView(svc)
         val root = FrameLayout(svc)
         root.addView(cutView, FrameLayout.LayoutParams(-1, -1))
@@ -109,7 +111,7 @@ class CutTool(private val svc: AccessibilityService, private val wm: WindowManag
             textSize = 22f
             setOnClickListener { onClick() }
         }
-        bar.addView(btn("✕") { close() })
+        bar.addView(btn("✕") { closeSelection() })
         bar.addView(btn("✓") { confirm(cutView) })
         root.addView(
             bar,
@@ -129,22 +131,31 @@ class CutTool(private val svc: AccessibilityService, private val wm: WindowManag
         overlay = root
     }
 
-    private fun close() {
+    private fun closeSelection() {
         overlay?.let { runCatching { wm.removeView(it) } }
         overlay = null
     }
 
+    private fun closePanel() {
+        panel?.let { runCatching { wm.removeView(it) } }
+        panel = null
+    }
+
     fun closeAll() {
-        close()
-        browser?.let { runCatching { wm.removeView(it) } }
-        browser = null
+        closeSelection()
+        closePanel()
+    }
+
+    fun destroy() {
+        closeAll()
+        scope.cancel()
     }
 
     private fun confirm(v: CutView) {
         val loc = IntArray(2)
         v.getLocationOnScreen(loc)
         val r = RectF(v.rect).apply { offset(loc[0].toFloat(), loc[1].toFloat()) }
-        close()
+        closeSelection()
         ui.postDelayed({ readArea(r) }, 150)
     }
 
@@ -166,87 +177,79 @@ class CutTool(private val svc: AccessibilityService, private val wm: WindowManag
         val raw = found.sortedWith(compareBy({ it.first.top }, { it.first.left }))
             .joinToString("\n") { it.second }.take(3000)
         if (raw.isBlank()) {
-            toast("Nggak ada teks di area itu (mungkin gambar)")
+            toast("Nggak ada teks di area itu (mungkin soalnya gambar)")
             return
         }
 
-        val pref = svc.getSharedPreferences("k", Context.MODE_PRIVATE)
-        val keys = mapOf(
-            "gemini" to (pref.getString("gemini", "") ?: ""),
-            "groq" to (pref.getString("groq", "") ?: ""),
-            "openrouter" to (pref.getString("openrouter", "") ?: "")
-        )
-        if (keys.values.all { it.isBlank() }) {
-            openBrowser(raw)
+        val keys = AiClient.keys(svc)
+        val noKey = keys.values.all { it.isBlank() }
+
+        if (expert) {
+            if (noKey) {
+                toast("Isi API key dulu di app")
+                return
+            }
+            showText("PAKAR", "Pakar lagi mengerjakan...")
+            scope.launch {
+                val res = AiClient.expert(raw, keys)
+                showText("PAKAR", res ?: ("AI gagal menjawab: " + AiClient.lastError.ifBlank { "coba lagi" }))
+            }
             return
         }
 
+        if (noKey) {
+            showBrowser(raw)
+            return
+        }
         toast("AI mendeteksi soal...")
         scope.launch {
-            val prompt = "Berikut teks mentah dari area layar. Ekstrak soal lengkap beserta " +
-                "pilihan jawabannya jika ada. Buang teks yang tidak relevan (tombol, timer, menu). " +
-                "Balas HANYA dengan teks soalnya.\n\n$raw"
-            val clean = AiClient.ask(prompt, keys)?.trim()
-            openBrowser(if (clean.isNullOrBlank()) raw else clean)
+            val c = AiClient.clean(raw, keys)?.trim()
+            showBrowser(if (c.isNullOrBlank()) raw else c)
         }
     }
 
-    private fun openBrowser(query: String) {
-        browser?.let { runCatching { wm.removeView(it) } }
-        val q = "Jawab soal ini dengan benar dan singkat: " + query.take(1500)
-        val url = "https://www.google.com/search?udm=50&q=" + URLEncoder.encode(q, "UTF-8")
+    private fun openWindow(title: String, content: View, frac: Float, onBack: (() -> Unit)?) {
+        closePanel()
+        big = false
+        val pad = (10 * d).toInt()
 
-        val web = WebView(svc).apply {
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            webViewClient = WebViewClient()
-            webChromeClient = WebChromeClient()
-            loadUrl(url)
-        }
         val root = LinearLayout(svc).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.WHITE)
         }
         val bar = LinearLayout(svc).apply {
-            setBackgroundColor(Color.parseColor("#222222"))
+            setBackgroundColor(Color.parseColor("#1F2937"))
             gravity = Gravity.CENTER_VERTICAL
         }
-        fun tv(t: String, onClick: () -> Unit) = TextView(svc).apply {
+        fun tv(t: String, size: Float, click: (() -> Unit)?) = TextView(svc).apply {
             text = t
-            textSize = 20f
+            textSize = size
             setTextColor(Color.WHITE)
-            setPadding((14 * d).toInt(), (10 * d).toInt(), (14 * d).toInt(), (10 * d).toInt())
-            setOnClickListener { onClick() }
+            setPadding(pad, pad, pad, pad)
+            if (click != null) setOnClickListener { click() }
         }
-        val title = TextView(svc).apply {
-            text = "AI Search (tahan buat geser)"
-            setTextColor(Color.WHITE)
-            textSize = 12f
-        }
-        bar.addView(tv("◀") { if (web.canGoBack()) web.goBack() })
-        bar.addView(title, LinearLayout.LayoutParams(0, -2, 1f))
-        bar.addView(tv("⛶") { toggleSize() })
-        bar.addView(tv("✕") {
-            browser?.let { runCatching { wm.removeView(it) } }
-            browser = null
-        })
+        val titleView = tv("$title (tahan untuk geser)", 12f, null)
+        if (onBack != null) bar.addView(tv("◀", 18f, onBack))
+        bar.addView(titleView, LinearLayout.LayoutParams(0, -2, 1f))
+        bar.addView(tv("⛶", 18f) { toggleSize() })
+        bar.addView(tv("✕", 18f) { closePanel() })
         root.addView(bar, LinearLayout.LayoutParams(-1, -2))
-        root.addView(web, LinearLayout.LayoutParams(-1, 0, 1f))
+        root.addView(content, LinearLayout.LayoutParams(-1, 0, 1f))
 
         val p = WindowManager.LayoutParams(
-            (sw * 0.94f).toInt(), (sh * 0.6f).toInt(),
+            (sw * 0.94f).toInt(), (sh * frac).toInt(),
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             x = (sw * 0.03f).toInt()
-            y = (sh * 0.3f).toInt()
+            y = (sh * 0.25f).toInt()
             softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         }
 
         var sx = 0f; var sy = 0f; var ox = 0; var oy = 0
-        title.setOnTouchListener { _, e ->
+        titleView.setOnTouchListener { _, e ->
             when (e.action) {
                 MotionEvent.ACTION_DOWN -> { sx = e.rawX; sy = e.rawY; ox = p.x; oy = p.y }
                 MotionEvent.ACTION_MOVE -> {
@@ -257,18 +260,42 @@ class CutTool(private val svc: AccessibilityService, private val wm: WindowManag
             }
             true
         }
-        browser = root
-        browserParams = p
-        big = false
+        panel = root
+        panelParams = p
         wm.addView(root, p)
     }
 
     private fun toggleSize() {
-        val p = browserParams ?: return
-        val b = browser ?: return
+        val p = panelParams ?: return
+        val v = panel ?: return
         big = !big
-        p.height = (sh * if (big) 0.88f else 0.6f).toInt()
+        p.height = (sh * if (big) 0.88f else 0.55f).toInt()
         if (big) p.y = (sh * 0.06f).toInt()
-        wm.updateViewLayout(b, p)
+        wm.updateViewLayout(v, p)
+    }
+
+    private fun showText(title: String, body: String) {
+        val pad = (12 * d).toInt()
+        val tv = TextView(svc).apply {
+            text = body
+            textSize = 15f
+            setTextColor(Color.BLACK)
+            setPadding(pad, pad, pad, pad)
+            setTextIsSelectable(true)
+        }
+        openWindow(title, ScrollView(svc).apply { addView(tv) }, 0.55f, null)
+    }
+
+    private fun showBrowser(query: String) {
+        val q = "Jawab soal ini dengan benar dan singkat: " + query.take(1500)
+        val url = "https://www.google.com/search?udm=50&q=" + URLEncoder.encode(q, "UTF-8")
+        val web = WebView(svc).apply {
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            webViewClient = WebViewClient()
+            webChromeClient = WebChromeClient()
+            loadUrl(url)
+        }
+        openWindow("AI SEARCH", web, 0.6f) { if (web.canGoBack()) web.goBack() }
     }
 }
