@@ -15,11 +15,7 @@ object AiClient {
     var lastError = ""
 
     private val http = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(90, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
-        .callTimeout(100, TimeUnit.SECONDS)
-        .build()
+        .callTimeout(40, TimeUnit.SECONDS).build()
     private val JSON = "application/json".toMediaType()
 
     private const val GROQ = "https://api.groq.com/openai/v1/chat/completions"
@@ -133,6 +129,27 @@ object AiClient {
         val prompt = "Berikut teks mentah dari area layar. Ekstrak soal lengkap beserta " +
             "pilihan jawabannya jika ada. Buang teks yang tidak relevan (tombol, timer, menu). " +
             "Balas HANYA dengan teks soalnya.\n\n$raw"
+        return ask(prompt, keys)
+    }
+
+    suspend fun chat(
+        context: String,
+        history: List<Pair<String, String>>,
+        keys: Map<String, String>
+    ): String? {
+        lastError = ""
+        val prompt = buildString {
+            append("Kamu asisten belajar yang akurat dan jelas. Pengguna memotong teks dari layar ")
+            append("HP sebagai konteks, lalu bertanya. Jawab pertanyaan terakhir pengguna dalam ")
+            append("bahasa Indonesia, runtut, dan teliti (hitung ulang bila ada hitungan). ")
+            append("Jangan pakai LaTeX, tulis teks biasa. Teks Arab tetap dalam huruf Arab.\n\n")
+            if (context.isNotBlank()) append("POTONGAN TEKS DARI LAYAR:\n$context\n\n")
+            append("PERCAKAPAN:\n")
+            for ((role, text) in history) {
+                append(if (role == "user") "Pengguna: " else "Asisten: ").append(text).append("\n")
+            }
+            append("Asisten:")
+        }
         return ask(prompt, keys)
     }
 
