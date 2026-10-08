@@ -2,6 +2,7 @@ package com.robot.solver
 
 import android.app.Activity
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import android.widget.*
@@ -38,9 +39,38 @@ class MainActivity : Activity() {
             }
         })
         layout.addView(Button(this).apply {
+            text = "Tes API key"
+            setOnClickListener {
+                Toast.makeText(context, "Mengetes...", Toast.LENGTH_SHORT).show()
+                Thread {
+                    val r = AiClient.test(AiClient.keys(this@MainActivity))
+                    runOnUiThread { Toast.makeText(context, r, Toast.LENGTH_LONG).show() }
+                }.start()
+            }
+        })
+        layout.addView(Button(this).apply {
             text = "Aktifkan di Pengaturan Aksesibilitas"
             setOnClickListener {
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }
+        })
+        layout.addView(Button(this).apply {
+            text = "Matikan penghemat baterai"
+            setOnClickListener {
+                runCatching {
+                    startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                }
+            }
+        })
+        layout.addView(Button(this).apply {
+            text = "Buka Info Aplikasi"
+            setOnClickListener {
+                startActivity(
+                    Intent(
+                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.parse("package:$packageName")
+                    )
+                )
             }
         })
         setContentView(ScrollView(this).apply { addView(layout) })
