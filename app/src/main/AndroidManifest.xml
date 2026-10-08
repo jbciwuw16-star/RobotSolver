@@ -3,7 +3,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application
-        android:label="Robot Solver"
+        android:label="Belajar Bot"
         android:theme="@android:style/Theme.DeviceDefault.Light">
 
         <activity android:name=".MainActivity" android:exported="true">
