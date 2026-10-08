@@ -3,8 +3,10 @@ package com.robot.solver
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.graphics.*
+import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
+import android.text.TextUtils
 import android.view.*
 import android.view.accessibility.AccessibilityNodeInfo
 import android.webkit.WebChromeClient
@@ -94,13 +96,17 @@ class CutTool(private val svc: AccessibilityService, private val wm: WindowManag
     private var panel: View? = null
     private var panelParams: WindowManager.LayoutParams? = null
     private var big = false
-    private var expert = false
+    private var kind = 0
+    private var append = false
+    private var ctx = ""
+    private val history = mutableListOf<Pair<String, String>>()
 
     private fun toast(s: String) = Toast.makeText(svc, s, Toast.LENGTH_LONG).show()
 
-    fun start(expertMode: Boolean) {
+    fun start(k: Int, add: Boolean = false) {
         if (overlay != null) return
-        expert = expertMode
+        kind = k
+        append = add
         val cutView = CutView(svc)
         val root = FrameLayout(svc)
         root.addView(cutView, FrameLayout.LayoutParams(-1, -1))
@@ -111,7 +117,13 @@ class CutTool(private val svc: AccessibilityService, private val wm: WindowManag
             textSize = 22f
             setOnClickListener { onClick() }
         }
-        bar.addView(btn("✕") { closeSelection() })
+        bar.addView(btn("✕") {
+            closeSelection()
+            if (kind == 2 && append) {
+                append = false
+                showTanya()
+            }
+        })
         bar.addView(btn("✓") { confirm(cutView) })
         root.addView(
             bar,
@@ -127,6 +139,7 @@ class CutTool(private val svc: AccessibilityService, private val wm: WindowManag
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         )
+        closePanel()
         wm.addView(root, p)
         overlay = root
     }
@@ -176,6 +189,23 @@ class CutTool(private val svc: AccessibilityService, private val wm: WindowManag
 
         val raw = found.sortedWith(compareBy({ it.first.top }, { it.first.left }))
             .joinToString("\n") { it.second }.take(3000)
+
+        if (kind == 2) {
+            if (!append) {
+                history.clear()
+                ctx = ""
+            }
+            if (raw.isBlank()) {
+                toast("Nggak ada teks di area itu, kamu tetap bisa ngetik soalnya manual")
+            } else {
+                ctx = if (ctx.isNotBlank()) ctx + "\n---\n" + raw else raw
+                ctx = ctx.take(6000)
+            }
+            append = false
+            showTanya()
+            return
+        }
+
         if (raw.isBlank()) {
             toast("Nggak ada teks di area itu (mungkin soalnya gambar)")
             return
@@ -184,7 +214,7 @@ class CutTool(private val svc: AccessibilityService, private val wm: WindowManag
         val keys = AiClient.keys(svc)
         val noKey = keys.values.all { it.isBlank() }
 
-        if (expert) {
+        if (kind == 1) {
             if (noKey) {
                 toast("Isi API key dulu di app")
                 return
@@ -244,7 +274,7 @@ class CutTool(private val svc: AccessibilityService, private val wm: WindowManag
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             x = (sw * 0.03f).toInt()
-            y = (sh * 0.25f).toInt()
+            y = (sh * 0.12f).toInt()
             softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         }
 
@@ -287,7 +317,7 @@ class CutTool(private val svc: AccessibilityService, private val wm: WindowManag
     }
 
     private fun showBrowser(query: String) {
-        val q = "Jawab soal ini dengan benar benar mencari di website verifikasi dan singkat: " + query.take(1500)
+        val q = "Jawab soal ini dengan benar benar mencari di website verifikasi dan singkat:: " + query.take(1500)
         val url = "https://www.google.com/search?udm=50&q=" + URLEncoder.encode(q, "UTF-8")
         val web = WebView(svc).apply {
             settings.javaScriptEnabled = true
@@ -297,5 +327,100 @@ class CutTool(private val svc: AccessibilityService, private val wm: WindowManag
             loadUrl(url)
         }
         openWindow("AI SEARCH", web, 0.6f) { if (web.canGoBack()) web.goBack() }
+    }
+
+    private fun showTanya() {
+        val pad = (10 * d).toInt()
+
+        val ctxView = TextView(svc).apply {
+            textSize = 12f
+            setTextColor(Color.DKGRAY)
+            setBackgroundColor(Color.parseColor("#F3F4F6"))
+            setPadding(pad, pad, pad, pad)
+            maxLines = 4
+            ellipsize = TextUtils.TruncateAt.END
+            text = if (ctx.isBlank()) "Potongan: (kosong)" else "Potongan: " + ctx.replace("\n", " ")
+        }
+
+        val log = TextView(svc).apply {
+            textSize = 14f
+            setTextColor(Color.BLACK)
+            setPadding(pad, pad, pad, pad)
+            setTextIsSelectable(true)
+        }
+        val logScroll = ScrollView(svc).apply { addView(log) }
+
+        var thinking = false
+        fun render() {
+            val sb = StringBuilder()
+            if (history.isEmpty() && !thinking) {
+                sb.append("Ketik pertanyaanmu di bawah, potongan di atas ikut dikirim ke AI.")
+            }
+            for ((role, text) in history) {
+                sb.append(if (role == "user") "Kamu: " else "AI: ").append(text).append("\n\n")
+            }
+            if (thinking) sb.append("AI sedang mikir...")
+            log.text = sb.toString()
+            logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
+        }
+
+        fun pill(label: String, color: String) = TextView(svc).apply {
+            text = label
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            setPadding(pad, pad, pad, pad)
+            background = GradientDrawable().apply {
+                cornerRadius = 10 * d
+                setColor(Color.parseColor(color))
+            }
+        }
+
+        val input = EditText(svc).apply {
+            hint = "Tanya sesuatu..."
+            setTextColor(Color.BLACK)
+            setHintTextColor(Color.GRAY)
+            maxLines = 3
+        }
+        val addBtn = pill("＋", "#2563EB")
+        val sendBtn = pill("KIRIM", "#16A34A")
+
+        addBtn.setOnClickListener { start(2, true) }
+        sendBtn.setOnClickListener {
+            val q = input.text.toString().trim()
+            if (q.isEmpty() || thinking) return@setOnClickListener
+            val keys = AiClient.keys(svc)
+            if (keys.values.all { it.isBlank() }) {
+                toast("Isi API key dulu di app")
+                return@setOnClickListener
+            }
+            input.setText("")
+            history += "user" to q
+            thinking = true
+            render()
+            scope.launch {
+                val ans = AiClient.chat(ctx, history.toList(), keys)
+                history += "ai" to (ans?.trim() ?: ("AI gagal menjawab: " + AiClient.lastError.ifBlank { "coba lagi" }))
+                thinking = false
+                render()
+            }
+        }
+
+        val row = LinearLayout(svc).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(pad / 2, pad / 2, pad / 2, pad / 2)
+        }
+        row.addView(addBtn, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = pad / 2 })
+        row.addView(input, LinearLayout.LayoutParams(0, -2, 1f))
+        row.addView(sendBtn, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = pad / 2 })
+
+        val content = LinearLayout(svc).apply { orientation = LinearLayout.VERTICAL }
+        content.addView(ctxView, LinearLayout.LayoutParams(-1, -2))
+        content.addView(logScroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        content.addView(row, LinearLayout.LayoutParams(-1, -2))
+
+        render()
+        openWindow("TANYA", content, 0.6f, null)
     }
 }
