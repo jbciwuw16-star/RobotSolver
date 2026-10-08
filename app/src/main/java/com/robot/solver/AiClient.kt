@@ -15,7 +15,11 @@ object AiClient {
     var lastError = ""
 
     private val http = OkHttpClient.Builder()
-        .callTimeout(40, TimeUnit.SECONDS).build()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(90, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(100, TimeUnit.SECONDS)
+        .build()
     private val JSON = "application/json".toMediaType()
 
     private const val GROQ = "https://api.groq.com/openai/v1/chat/completions"
