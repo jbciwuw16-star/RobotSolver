@@ -1,88 +1,109 @@
 package com.robot.solver
 
 import android.accessibilityservice.AccessibilityService
-import android.accessibilityservice.GestureDescription
 import android.graphics.Color
-import android.util.Log
-import android.graphics.Path
 import android.graphics.PixelFormat
-import android.graphics.Rect
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
-import android.view.*
+import android.os.Handler
+import android.os.Looper
+import android.view.Gravity
+import android.view.MotionEvent
+import android.view.View
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
-import android.view.accessibility.AccessibilityNodeInfo
-import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
-import android.widget.Toast
-import kotlinx.coroutines.*
 
 class SolverService : AccessibilityService() {
 
-    private data class Item(val text: String, val rect: Rect, val node: AccessibilityNodeInfo)
-
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val handler = Handler(Looper.getMainLooper())
     private lateinit var wm: WindowManager
     private lateinit var cut: CutTool
     private lateinit var box: LinearLayout
-    private lateinit var solveBtn: Button
-    private lateinit var cutBtn: Button
+    private lateinit var robot: RobotView
+    private lateinit var cutBtn: TextView
+    private lateinit var pakarBtn: TextView
     private lateinit var params: WindowManager.LayoutParams
-    private lateinit var toggle: TextView
+    private lateinit var toggle: PowerView
     private lateinit var tParams: WindowManager.LayoutParams
+    private var d = 1f
     private var isOn = true
-    private var busy = false
+
+    private val watchdog = object : Runnable {
+        override fun run() {
+            runCatching {
+                if (::box.isInitialized && !box.isAttachedToWindow) wm.addView(box, params)
+                if (::toggle.isInitialized && !toggle.isAttachedToWindow) wm.addView(toggle, tParams)
+            }
+            handler.postDelayed(this, 10_000)
+        }
+    }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
     override fun onInterrupt() {}
 
     override fun onServiceConnected() {
+        d = resources.displayMetrics.density
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        if (::box.isInitialized) runCatching { wm.removeView(box) }
+        if (::toggle.isInitialized) runCatching { wm.removeView(toggle) }
+        if (::cut.isInitialized) cut.destroy()
         cut = CutTool(this, wm)
+        isOn = true
         showOverlay()
         showToggle()
+        handler.removeCallbacks(watchdog)
+        handler.postDelayed(watchdog, 10_000)
     }
 
     override fun onDestroy() {
-        scope.cancel()
+        handler.removeCallbacks(watchdog)
         if (::box.isInitialized) runCatching { wm.removeView(box) }
         if (::toggle.isInitialized) runCatching { wm.removeView(toggle) }
-        if (::cut.isInitialized) cut.closeAll()
+        if (::cut.isInitialized) cut.destroy()
         super.onDestroy()
     }
 
+    private fun chip(label: String, color: String, onClick: () -> Unit) = TextView(this).apply {
+        text = label
+        textSize = 13f
+        typeface = Typeface.DEFAULT_BOLD
+        setTextColor(Color.WHITE)
+        gravity = Gravity.CENTER
+        setPadding((18 * d).toInt(), (9 * d).toInt(), (18 * d).toInt(), (9 * d).toInt())
+        background = GradientDrawable().apply {
+            cornerRadius = 22 * d
+            setColor(Color.parseColor(color))
+        }
+        visibility = View.GONE
+        setOnClickListener { onClick() }
+    }
+
+    private fun menu(show: Boolean) {
+        val v = if (show) View.VISIBLE else View.GONE
+        cutBtn.visibility = v
+        pakarBtn.visibility = v
+    }
+
     private fun showOverlay() {
-        val d = resources.displayMetrics.density
         box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
         }
-        solveBtn = Button(this).apply {
-            text = "SOLVE"
-            visibility = View.GONE
-            setOnClickListener { solve() }
+        robot = RobotView(this)
+        cutBtn = chip("CUT", "#2563EB") {
+            menu(false)
+            cut.start(false)
         }
-        cutBtn = Button(this).apply {
-            text = "CUT"
-            visibility = View.GONE
-            setOnClickListener {
-                solveBtn.visibility = View.GONE
-                visibility = View.GONE
-                cut.start()
-            }
+        pakarBtn = chip("PAKAR", "#7C3AED") {
+            menu(false)
+            cut.start(true)
         }
-        val robot = TextView(this).apply {
-            text = "🤖"
-            textSize = 28f
-            gravity = Gravity.CENTER
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(Color.parseColor("#CC222222"))
-            }
+        box.addView(robot, LinearLayout.LayoutParams((52 * d).toInt(), (52 * d).toInt()))
+        for (b in listOf(cutBtn, pakarBtn)) {
+            box.addView(b, LinearLayout.LayoutParams(-2, -2).apply { topMargin = (6 * d).toInt() })
         }
-        box.addView(robot, LinearLayout.LayoutParams((56 * d).toInt(), (56 * d).toInt()))
-        box.addView(solveBtn)
-        box.addView(cutBtn)
 
         params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -105,18 +126,14 @@ class SolverService : AccessibilityService() {
                 MotionEvent.ACTION_MOVE -> {
                     val dx = (e.rawX - sx).toInt()
                     val dy = (e.rawY - sy).toInt()
-                    if (Math.abs(dx) > 10 || Math.abs(dy) > 10) moved = true
+                    if (Math.abs(dx) > 10 * d || Math.abs(dy) > 10 * d) moved = true
                     if (moved) {
                         params.x = ox + dx
                         params.y = oy + dy
                         wm.updateViewLayout(box, params)
                     }
                 }
-                MotionEvent.ACTION_UP -> if (!moved) {
-                    val v = if (solveBtn.visibility == View.VISIBLE) View.GONE else View.VISIBLE
-                    solveBtn.visibility = v
-                    cutBtn.visibility = v
-                }
+                MotionEvent.ACTION_UP -> if (!moved) menu(cutBtn.visibility != View.VISIBLE)
             }
             true
         }
@@ -124,20 +141,9 @@ class SolverService : AccessibilityService() {
     }
 
     private fun showToggle() {
-        val d = resources.displayMetrics.density
-        toggle = TextView(this).apply {
-            text = "⏻"
-            textSize = 15f
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-            alpha = 0.6f
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(Color.parseColor("#99000000"))
-            }
-        }
+        toggle = PowerView(this).apply { alpha = 0.75f }
         tParams = WindowManager.LayoutParams(
-            (32 * d).toInt(), (32 * d).toInt(),
+            (36 * d).toInt(), (36 * d).toInt(),
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
@@ -156,7 +162,7 @@ class SolverService : AccessibilityService() {
                 MotionEvent.ACTION_MOVE -> {
                     val dx = (e.rawX - sx).toInt()
                     val dy = (e.rawY - sy).toInt()
-                    if (Math.abs(dx) > 10 || Math.abs(dy) > 10) moved = true
+                    if (Math.abs(dx) > 10 * d || Math.abs(dy) > 10 * d) moved = true
                     if (moved) {
                         tParams.x = ox + dx
                         tParams.y = oy + dy
@@ -173,79 +179,11 @@ class SolverService : AccessibilityService() {
     private fun setPower(on: Boolean) {
         isOn = on
         if (!on) {
-            solveBtn.visibility = View.GONE
-            cutBtn.visibility = View.GONE
+            menu(false)
             cut.closeAll()
         }
         box.visibility = if (on) View.VISIBLE else View.GONE
-        toggle.alpha = if (on) 0.6f else 0.3f
+        toggle.on = on
+        toggle.alpha = if (on) 0.75f else 0.45f
     }
-
-    private fun collect(): List<Item> {
-        val out = mutableListOf<Item>()
-        fun walk(n: AccessibilityNodeInfo?) {
-            if (n == null) return
-            val t = (n.text ?: n.contentDescription)?.toString()?.trim()
-            if (!t.isNullOrEmpty() && n.isVisibleToUser) {
-                val r = Rect()
-                n.getBoundsInScreen(r)
-                out += Item(t.take(400), r, n)
-            }
-            for (i in 0 until n.childCount) walk(n.getChild(i))
-        }
-        walk(rootInActiveWindow)
-        return out
-    }
-
-    private fun solve() {
-        Log.d("Solver", "SOLVE diklik, busy=$busy")
-        if (busy) return
-        val items = collect()
-        if (items.isEmpty()) { toast("Soal nggak kebaca"); return }
-
-        val prompt = buildString {
-            append("Berikut semua teks di layar sebuah kuis, bernomor.\n")
-            append("Cari soalnya, tentukan jawaban yang BENAR, lalu balas HANYA dengan ")
-            append("satu angka: nomor elemen pilihan jawaban yang benar. Tanpa teks lain.\n\n")
-            items.forEachIndexed { i, it -> append("$i: ${it.text}\n") }
-        }
-        val p = getSharedPreferences("k", MODE_PRIVATE)
-        val keys = mapOf(
-            "gemini" to (p.getString("gemini", "") ?: ""),
-            "groq" to (p.getString("groq", "") ?: ""),
-            "openrouter" to (p.getString("openrouter", "") ?: "")
-        )
-        if (keys.values.all { it.isBlank() }) { toast("Isi API key dulu"); return }
-
-        busy = true
-        toast("Mikir...")
-        scope.launch {
-            val idx = try { AiClient.vote(prompt, keys) } catch (e: Exception) {
-                Log.e("Solver", "vote crash", e); null
-            } finally { busy = false }
-            Log.d("Solver", "hasil idx=$idx dari ${items.size} item")
-            if (idx == null || idx !in items.indices) {
-                toast("AI gagal jawab")
-                return@launch
-            }
-            toast("Jawaban: ${items[idx].text.take(40)}")
-            delay(300)
-            tap(items[idx])
-        }
-    }
-
-    private fun tap(item: Item) {
-        var n: AccessibilityNodeInfo? = item.node
-        while (n != null && !n.isClickable) n = n.parent
-        if (n != null && n.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return
-
-        val path = Path().apply { moveTo(item.rect.exactCenterX(), item.rect.exactCenterY()) }
-        dispatchGesture(
-            GestureDescription.Builder()
-                .addStroke(GestureDescription.StrokeDescription(path, 0, 60)).build(),
-            null, null
-        )
-    }
-
-    private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
 }
