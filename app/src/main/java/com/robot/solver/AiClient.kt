@@ -20,7 +20,7 @@ object AiClient {
 
     private const val GROQ = "https://api.groq.com/openai/v1/chat/completions"
     private const val OPENROUTER = "https://openrouter.ai/api/v1/chat/completions"
-    private val GEMINI_MODELS = listOf("gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash")
+    private val GEMINI_MODELS = listOf("gemini-3.8-flash", "gemini-3.5-flash", "gemini-2.5-flash")
 
     fun keys(c: Context): Map<String, String> {
         val p = c.getSharedPreferences("k", Context.MODE_PRIVATE)
@@ -145,31 +145,4 @@ object AiClient {
 
         val judge = buildString {
             append("Ada satu soal dan beberapa solusi dari AI berbeda. Periksa semuanya dengan ")
-            append("teliti, hitung ulang sendiri bila soal matematika, lalu tulis satu solusi ")
-            append("final yang benar, runtut, dan jelas, diakhiri baris: ")
-            append("JAWABAN: <jawaban akhir>. Tanpa LaTeX.\n\nSOAL:\n$question\n")
-            answers.forEachIndexed { i, a -> append("\nSOLUSI ${i + 1}:\n$a\n") }
-        }
-        ask(judge, keys) ?: answers[0]
-    }
-
-    fun test(keys: Map<String, String>): String {
-        val sb = StringBuilder()
-        keys["gemini"]?.takeIf { it.isNotBlank() }?.let {
-            lastError = ""
-            val r = gemini(it, "Balas hanya: OK")
-            sb.append("Gemini: ").append(if (r != null) "OK" else lastError.ifBlank { "gagal" }).append("\n")
-        }
-        keys["groq"]?.takeIf { it.isNotBlank() }?.let {
-            lastError = ""
-            val r = openAiStyle(GROQ, it, "llama-3.3-70b-versatile", "Balas hanya: OK")
-            sb.append("Groq: ").append(if (r != null) "OK" else lastError.ifBlank { "gagal" }).append("\n")
-        }
-        keys["openrouter"]?.takeIf { it.isNotBlank() }?.let {
-            lastError = ""
-            val r = openAiStyle(OPENROUTER, it, "meta-llama/llama-3.3-70b-instruct:free", "Balas hanya: OK")
-            sb.append("OpenRouter: ").append(if (r != null) "OK" else lastError.ifBlank { "gagal" }).append("\n")
-        }
-        return if (sb.isEmpty()) "Belum ada key yang diisi" else sb.toString().trim()
-    }
-}
+            append("teliti, hitung ulang sendiri bila soal matematika, lalu tulis satu
