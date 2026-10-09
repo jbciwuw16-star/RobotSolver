@@ -4,9 +4,11 @@ import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.graphics.*
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.text.TextUtils
+import android.util.Base64
 import android.view.*
 import android.view.accessibility.AccessibilityNodeInfo
 import android.webkit.WebChromeClient
@@ -14,7 +16,9 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.*
 import kotlinx.coroutines.*
+import java.io.ByteArrayOutputStream
 import java.net.URLEncoder
+import java.util.concurrent.Executors
 
 class CutView(c: Context) : View(c) {
     val rect = RectF()
@@ -101,6 +105,8 @@ class CutTool(private val svc: AccessibilityService, private val wm: WindowManag
     private var ctx = ""
     private val history = mutableListOf<Pair<String, String>>()
     private var web: WebView? = null
+    private var answerView: TextView? = null
+    private val bg = Executors.newSingleThreadExecutor()
     private var freshWeb = false
 
     init {
@@ -185,6 +191,7 @@ class CutTool(private val svc: AccessibilityService, private val wm: WindowManag
         scope.cancel()
         runCatching { web?.destroy() }
         web = null
+        bg.shutdown()
     }
 
     private fun confirm(v: CutView) {
@@ -229,24 +236,106 @@ class CutTool(private val svc: AccessibilityService, private val wm: WindowManag
             return
         }
 
+        if (kind == 1) {
+            runExpert(raw, r)
+            return
+        }
+
         if (raw.isBlank()) {
             toast("Nggak ada teks di area itu (mungkin soalnya gambar)")
             return
         }
 
-        if (kind == 1) {
-            showGoogle("PAKAR", expertPrompt(raw), null)
-        } else {
-            showGoogle("AI SEARCH", "Jawab soal ini dengan benar dan singkat: " + raw.take(1500), null)
-        }
+        showGoogle("AI SEARCH", "Jawab soal ini dengan benar dan singkat: " + raw.take(1500), null)
     }
 
-    private fun expertPrompt(raw: String) =
-        "Kamu pakar matematika dan bahasa Arab (nahwu, sharaf, i'rab, tarjamah). " +
-            "Teks di bawah diambil dari layar HP, abaikan teks tombol/menu/timer yang tidak relevan. " +
-            "Temukan soalnya, kerjakan langkah demi langkah dengan teliti, periksa ulang, lalu tulis " +
-            "baris terakhir: JAWABAN: <jawaban akhir>. Bahasa Indonesia, teks Arab tetap huruf Arab.\n\n" +
-            raw.take(2000)
+    private fun runExpert(raw: String, r: RectF) {
+        val keys = AiClient.keys(svc)
+        if (keys.values.all { it.isBlank() }) {
+            toast("Isi API key dulu di app")
+            return
+        }
+        val hasGemini = keys["gemini"]?.isNotBlank() == true
+        fun go(img: String?) {
+            if (raw.isBlank() && img == null) {
+                toast(
+                    if (hasGemini) "Nggak ada teks & gambar gagal diambil (butuh Android 11+, matikan lalu nyalakan lagi aksesibilitasnya)"
+                    else "Nggak ada teks di area itu. Soal bergambar butuh Gemini API key"
+                )
+                return
+            }
+            setPakar("Pakar lagi mengerjakan..." + if (img != null) " (+gambar)" else "")
+            scope.launch {
+                val res = AiClient.expert(raw, keys, img) { setPakar(it) }
+                setPakar(res ?: ("AI gagal menjawab: " + AiClient.lastError.ifBlank { "coba lagi" }))
+            }
+        }
+        // Gambar cuma bisa dibaca Gemini, jadi nggak usah diambil kalau key Gemini kosong
+        if (hasGemini) grabImage(r) { go(it) } else go(null)
+    }
+
+    private fun setPakar(body: String) {
+        val tv = answerView
+        if (tv != null && panel != null && tv.isAttachedToWindow) tv.text = body
+        else showText("PAKAR", body)
+    }
+
+    // Screenshot area terpilih (Android 11+), dikecilkan lalu jadi base64 JPEG
+    private fun grabImage(r: RectF, done: (String?) -> Unit) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            done(null)
+            return
+        }
+        ui.postDelayed({
+            try {
+                svc.takeScreenshot(
+                    Display.DEFAULT_DISPLAY, bg,
+                    object : AccessibilityService.TakeScreenshotCallback {
+                        override fun onSuccess(res: AccessibilityService.ScreenshotResult) {
+                            val out = runCatching { encodeShot(res, r) }.getOrNull()
+                            ui.post { done(out) }
+                        }
+
+                        override fun onFailure(errorCode: Int) {
+                            ui.post { done(null) }
+                        }
+                    }
+                )
+            } catch (e: Exception) {
+                done(null)
+            }
+        }, 90)
+    }
+
+    private fun encodeShot(res: AccessibilityService.ScreenshotResult, r: RectF): String? {
+        val hb = res.hardwareBuffer
+        try {
+            val hw = Bitmap.wrapHardwareBuffer(hb, res.colorSpace) ?: return null
+            val full = hw.copy(Bitmap.Config.ARGB_8888, false) ?: return null
+            hw.recycle()
+            val k = full.width / sw.toFloat()
+            val l = (r.left * k).toInt().coerceIn(0, full.width - 1)
+            val t = (r.top * k).toInt().coerceIn(0, full.height - 1)
+            val rr = (r.right * k).toInt().coerceIn(l + 1, full.width)
+            val bb = (r.bottom * k).toInt().coerceIn(t + 1, full.height)
+            var crop = Bitmap.createBitmap(full, l, t, rr - l, bb - t)
+            val m = maxOf(crop.width, crop.height)
+            if (m > 1280) {
+                val sc = 1280f / m
+                crop = Bitmap.createScaledBitmap(
+                    crop,
+                    (crop.width * sc).toInt().coerceAtLeast(1),
+                    (crop.height * sc).toInt().coerceAtLeast(1),
+                    true
+                )
+            }
+            val bos = ByteArrayOutputStream()
+            crop.compress(Bitmap.CompressFormat.JPEG, 85, bos)
+            return Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP)
+        } finally {
+            hb.close()
+        }
+    }
 
     private fun openWindow(title: String, content: View, frac: Float, onBack: (() -> Unit)?) {
         closePanel()
@@ -312,6 +401,19 @@ class CutTool(private val svc: AccessibilityService, private val wm: WindowManag
         p.height = (sh * if (big) 0.88f else 0.55f).toInt()
         if (big) p.y = (sh * 0.06f).toInt()
         wm.updateViewLayout(v, p)
+    }
+
+    private fun showText(title: String, body: String) {
+        val pad = (12 * d).toInt()
+        val tv = TextView(svc).apply {
+            text = body
+            textSize = 15f
+            setTextColor(Color.BLACK)
+            setPadding(pad, pad, pad, pad)
+            setTextIsSelectable(true)
+        }
+        answerView = tv
+        openWindow(title, ScrollView(svc).apply { addView(tv) }, 0.55f, null)
     }
 
     private fun showGoogle(title: String, prompt: String, back: (() -> Unit)?) {
