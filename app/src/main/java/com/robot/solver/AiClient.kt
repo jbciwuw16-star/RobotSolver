@@ -2,6 +2,7 @@ package com.robot.solver
 
 import android.content.Context
 import kotlinx.coroutines.*
+import kotlinx.coroutines.selects.select
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -15,12 +16,12 @@ object AiClient {
     var lastError = ""
 
     private val http = OkHttpClient.Builder()
-        .callTimeout(40, TimeUnit.SECONDS).build()
+        .callTimeout(25, TimeUnit.SECONDS).build()
     private val JSON = "application/json".toMediaType()
 
     private const val GROQ = "https://api.groq.com/openai/v1/chat/completions"
     private const val OPENROUTER = "https://openrouter.ai/api/v1/chat/completions"
-    private val GEMINI_MODELS = listOf("gemini-3.8-flash", "gemini-3.5-flash", "gemini-2.5-flash")
+    private val GEMINI_MODELS = listOf("gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest")
 
     fun keys(c: Context): Map<String, String> {
         val p = c.getSharedPreferences("k", Context.MODE_PRIVATE)
@@ -106,23 +107,23 @@ object AiClient {
         return jobs
     }
 
-    suspend fun ask(prompt: String, keys: Map<String, String>): String? =
-        withContext(Dispatchers.IO) {
-            val calls = listOf<() -> String?>(
-                { keys["gemini"]?.takeIf { it.isNotBlank() }?.let { gemini(it, prompt) } },
-                {
-                    keys["groq"]?.takeIf { it.isNotBlank() }?.let {
-                        openAiStyle(GROQ, it, "llama-3.3-70b-versatile", prompt)
-                    }
-                },
-                {
-                    keys["openrouter"]?.takeIf { it.isNotBlank() }?.let {
-                        openAiStyle(OPENROUTER, it, "meta-llama/llama-3.3-70b-instruct:free", prompt)
-                    }
+    // Semua provider jalan barengan, yang pertama berhasil langsung dipakai
+    suspend fun ask(prompt: String, keys: Map<String, String>): String? {
+        val racer = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            val pending = racer.fanOut(prompt, keys).toMutableList()
+            while (pending.isNotEmpty()) {
+                val (done, value) = select<Pair<Deferred<String?>, String?>> {
+                    pending.forEach { d -> d.onAwait { d to it } }
                 }
-            )
-            calls.firstNotNullOfOrNull { it() }
+                pending.remove(done)
+                if (!value.isNullOrBlank()) return value
+            }
+            return null
+        } finally {
+            racer.cancel()
         }
+    }
 
     suspend fun clean(raw: String, keys: Map<String, String>): String? {
         lastError = ""
