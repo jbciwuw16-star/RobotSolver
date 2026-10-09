@@ -100,6 +100,27 @@ class CutTool(private val svc: AccessibilityService, private val wm: WindowManag
     private var append = false
     private var ctx = ""
     private val history = mutableListOf<Pair<String, String>>()
+    private var web: WebView? = null
+    private var freshWeb = false
+
+    init {
+        // Pemanasan: bikin WebView dari awal supaya buka Google nggak nunggu inisialisasi Chromium
+        runCatching { webView() }
+    }
+
+    private fun webView(): WebView = web ?: WebView(svc).apply {
+        settings.javaScriptEnabled = true
+        settings.domStorageEnabled = true
+        webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, url: String?) {
+                if (freshWeb) {
+                    freshWeb = false
+                    view?.clearHistory()
+                }
+            }
+        }
+        webChromeClient = WebChromeClient()
+    }.also { web = it }
 
     private fun toast(s: String) = Toast.makeText(svc, s, Toast.LENGTH_LONG).show()
 
@@ -162,6 +183,8 @@ class CutTool(private val svc: AccessibilityService, private val wm: WindowManag
     fun destroy() {
         closeAll()
         scope.cancel()
+        runCatching { web?.destroy() }
+        web = null
     }
 
     private fun confirm(v: CutView) {
@@ -169,7 +192,7 @@ class CutTool(private val svc: AccessibilityService, private val wm: WindowManag
         v.getLocationOnScreen(loc)
         val r = RectF(v.rect).apply { offset(loc[0].toFloat(), loc[1].toFloat()) }
         closeSelection()
-        ui.postDelayed({ readArea(r) }, 150)
+        readArea(r)
     }
 
     private fun readArea(r: RectF) {
@@ -211,32 +234,19 @@ class CutTool(private val svc: AccessibilityService, private val wm: WindowManag
             return
         }
 
-        val keys = AiClient.keys(svc)
-        val noKey = keys.values.all { it.isBlank() }
-
         if (kind == 1) {
-            if (noKey) {
-                toast("Isi API key dulu di app")
-                return
-            }
-            showText("PAKAR", "Pakar lagi mengerjakan...")
-            scope.launch {
-                val res = AiClient.expert(raw, keys)
-                showText("PAKAR", res ?: ("AI gagal menjawab: " + AiClient.lastError.ifBlank { "coba lagi" }))
-            }
-            return
-        }
-
-        if (noKey) {
-            showBrowser(raw)
-            return
-        }
-        toast("AI mendeteksi soal...")
-        scope.launch {
-            val c = AiClient.clean(raw, keys)?.trim()
-            showBrowser(if (c.isNullOrBlank()) raw else c)
+            showGoogle("PAKAR", expertPrompt(raw), null)
+        } else {
+            showGoogle("AI SEARCH", "Jawab soal ini dengan benar dan singkat: " + raw.take(1500), null)
         }
     }
+
+    private fun expertPrompt(raw: String) =
+        "Kamu pakar matematika dan bahasa Arab (nahwu, sharaf, i'rab, tarjamah). " +
+            "Teks di bawah diambil dari layar HP, abaikan teks tombol/menu/timer yang tidak relevan. " +
+            "Temukan soalnya, kerjakan langkah demi langkah dengan teliti, periksa ulang, lalu tulis " +
+            "baris terakhir: JAWABAN: <jawaban akhir>. Bahasa Indonesia, teks Arab tetap huruf Arab.\n\n" +
+            raw.take(2000)
 
     private fun openWindow(title: String, content: View, frac: Float, onBack: (() -> Unit)?) {
         closePanel()
@@ -304,29 +314,16 @@ class CutTool(private val svc: AccessibilityService, private val wm: WindowManag
         wm.updateViewLayout(v, p)
     }
 
-    private fun showText(title: String, body: String) {
-        val pad = (12 * d).toInt()
-        val tv = TextView(svc).apply {
-            text = body
-            textSize = 15f
-            setTextColor(Color.BLACK)
-            setPadding(pad, pad, pad, pad)
-            setTextIsSelectable(true)
+    private fun showGoogle(title: String, prompt: String, back: (() -> Unit)?) {
+        val url = "https://www.google.com/search?udm=50&q=" + URLEncoder.encode(prompt, "UTF-8")
+        val w = webView()
+        (w.parent as? ViewGroup)?.removeView(w)
+        freshWeb = true
+        w.stopLoading()
+        w.loadUrl(url)
+        openWindow(title, w, 0.6f) {
+            if (w.canGoBack()) w.goBack() else back?.invoke()
         }
-        openWindow(title, ScrollView(svc).apply { addView(tv) }, 0.55f, null)
-    }
-
-    private fun showBrowser(query: String) {
-        val q = "Jawab soal ini dengan benar dan singkat: " + query.take(1500)
-        val url = "https://www.google.com/search?udm=50&q=" + URLEncoder.encode(q, "UTF-8")
-        val web = WebView(svc).apply {
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            webViewClient = WebViewClient()
-            webChromeClient = WebChromeClient()
-            loadUrl(url)
-        }
-        openWindow("AI SEARCH", web, 0.6f) { if (web.canGoBack()) web.goBack() }
     }
 
     private fun showTanya() {
@@ -387,12 +384,19 @@ class CutTool(private val svc: AccessibilityService, private val wm: WindowManag
         val sendBtn = pill("KIRIM", "#16A34A")
 
         addBtn.setOnClickListener { start(2, true) }
+        fun googleFallback(q: String) {
+            val full = (if (ctx.isNotBlank()) "Konteks dari layar:\n" + ctx.take(3000) + "\n\n" else "") +
+                "Pertanyaan: " + q
+            showGoogle("TANYA", full) { showTanya() }
+        }
+
         sendBtn.setOnClickListener {
             val q = input.text.toString().trim()
             if (q.isEmpty() || thinking) return@setOnClickListener
             val keys = AiClient.keys(svc)
+            // Tanpa API key: langsung Google AI, nggak perlu nunggu apa-apa
             if (keys.values.all { it.isBlank() }) {
-                toast("Isi API key dulu di app")
+                googleFallback(q)
                 return@setOnClickListener
             }
             input.setText("")
@@ -401,9 +405,15 @@ class CutTool(private val svc: AccessibilityService, private val wm: WindowManag
             render()
             scope.launch {
                 val ans = AiClient.chat(ctx, history.toList(), keys)
-                history += "ai" to (ans?.trim() ?: ("AI gagal menjawab: " + AiClient.lastError.ifBlank { "coba lagi" }))
                 thinking = false
-                render()
+                if (ans.isNullOrBlank()) {
+                    // AI gagal / timeout: jangan buntu, lempar ke Google
+                    history.removeAt(history.lastIndex)
+                    googleFallback(q)
+                } else {
+                    history += "ai" to ans.trim()
+                    render()
+                }
             }
         }
 
